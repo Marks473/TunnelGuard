@@ -28,6 +28,8 @@ class Palette:
     accent: str
     good: str
     amber: str
+    danger: str
+    danger_bg: str
     hero: str
     hero_edge: str
     hero_text: str
@@ -52,6 +54,7 @@ PALETTES = {
     "light": Palette(
         is_light=True, bg="#f8f7fc", sidebar="#f0edf7", panel="#ffffff", edge="#ded8ea",
         text="#241b35", muted="#5c556d", accent="#6340b4", good="#08744e", amber="#8e4a23",
+        danger="#9f2338", danger_bg="#fce8eb",
         hero="#eee7ff", hero_edge="#d7c6f2", hero_text="#514565", badge="#e2d7f7", spark="#aa5b5e",
         status_bar="#ede8f6", primary="#6542bc", primary_hover="#54369d", primary_text="#ffffff",
         button="#eee8f7", button_hover="#e3d9f4", disabled="#f3f0f6", disabled_text="#746b82",
@@ -60,6 +63,7 @@ PALETTES = {
     "dark": Palette(
         is_light=False, bg="#101017", sidebar="#14141e", panel="#1b1b27", edge="#303043",
         text="#f5f2ff", muted="#a8a5bc", accent="#c5afff", good="#8de1bd", amber="#ffc695",
+        danger="#ffabb6", danger_bg="#482531",
         hero="#1b1730", hero_edge="#3e3155", hero_text="#c7bfdc", badge="#2a2142", spark="#f9c4ae",
         status_bar="#191823", primary="#bda7ff", primary_hover="#daccff", primary_text="#21173e",
         button="#28273b", button_hover="#393650", disabled="#252435", disabled_text="#9390a4",
@@ -192,7 +196,7 @@ class LauncherView(NewsView, ActivityView):
         self.progress = tk.Canvas(status_bar, width=18, height=16, bg=self.palette.status_bar, highlightthickness=0)
         self.progress.pack(side="left")
         self.progress_item = self.progress.create_arc(3, 3, 13, 13, style="arc", width=2, outline=self.palette.accent, extent=300)
-        self.message = self.label(status_bar, "Перед каждым запуском TunnelGuard проверяет VPN и IPv4.",
+        self.message = self.label(status_bar, "VPN и IPv4 проверяются перед запуском через TunnelGuard.",
                                   9, self.palette.muted, self.palette.status_bar, justify="left")
         self.message.pack(side="left", fill="x", expand=True)
         status_bar.bind("<Configure>", lambda event: self.message.config(wraplength=max(100, event.width - 60)))

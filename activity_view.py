@@ -156,6 +156,17 @@ class ActivityView:
             else:
                 note, color = "Проверка VPN при этом запуске не зафиксирована", p.muted
             self.label(row, note, 9, color=color, wraplength=550, justify="left").pack(fill="x")
+            for incident in session.vpn_incidents:
+                caption = "Запуск замечен без VPN" if incident.during_start else "Работало без VPN"
+                interval = event_time(incident.first_seen)
+                if self.activity.vpn_exposures.get(session.app) is incident:
+                    interval = f"с {interval} · наблюдается сейчас"
+                elif incident.last_seen > incident.first_seen:
+                    end = datetime.fromtimestamp(incident.last_seen)
+                    end_format = "%H:%M:%S" if end.date() == datetime.fromtimestamp(incident.first_seen).date() else "%d.%m.%Y %H:%M:%S"
+                    interval += f" — {end.strftime(end_format)}"
+                self.label(row, f"!  {caption}  ·  {interval}", 9, color=p.danger, bg=p.danger_bg,
+                           weight="bold", padx=8, pady=4, wraplength=530, justify="left").pack(anchor="w", pady=(5, 0))
         if self.history_limit < len(sessions):
             self.button(self.history_rows, "Показать ещё", self.expand_history).pack(anchor="w", pady=5)
 

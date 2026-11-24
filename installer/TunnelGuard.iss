@@ -8,7 +8,7 @@
   #error ProjectDir is required
 #endif
 #ifndef ReleaseVersion
-  #define ReleaseVersion "1.0.0"
+  #define ReleaseVersion "1.1.0"
 #endif
 
 [Setup]

@@ -42,9 +42,12 @@ class TunnelGuardWindow(LauncherView):
         self.results = queue.Queue()
         self.busy = False
         self.tray = None
+        self.tray_visible = False
         self.hidden_in_tray = False
         self.route_known = False
         self.running = None
+        self.process_vpn = None
+        self.process_check_pending = False
         self.route = None
         self.split = None
         self.ip_confirmed = False
@@ -82,11 +85,13 @@ class TunnelGuardWindow(LauncherView):
         elif not self.settings.target_ip:
             self.show_message("Первый запуск. Укажи внешний IPv4 VPN в настройках, чтобы включить проверки.")
         root.protocol("WM_DELETE_WINDOW", self.close)
-        self.refresh_processes()
         if monitor:
+            self.refresh_processes()
             self.schedule_network_check()
             root.after(100, self.read_results)
             root.after_idle(self.translate_cached_news)
+        else:
+            self.refresh_process_snapshot(self.read_running_apps(), None, time.time(), time.monotonic())
         if startup and self.settings and self.settings.vpn_server_ip:
             root.after(1500, lambda: self.run_action("Подключение при входе в Windows…", self.connect))
 
@@ -102,7 +107,17 @@ class TunnelGuardWindow(LauncherView):
         running = None if self.running is None else tuple(
             app_details(app)[0] for app, pids in self.running.items() if pids
         )
-        return TrayStatus(vpn, running)
+        return TrayStatus(self.process_vpn if running else vpn, running)
+
+    def show_tray(self, status):
+        if self.tray_visible:
+            self.tray.update(status)
+            return
+        if self.tray is None:
+            self.tray = TrayIcon(self.root, self.restore_from_tray, self.exit_launcher)
+        self.tray.show(status)
+        self.tray_visible = True
+        self.tray.notify()
 
     def hide_to_tray(self):
         if self.settings_window is not None:
@@ -111,9 +126,7 @@ class TunnelGuardWindow(LauncherView):
         if self.hidden_in_tray:
             return
         try:
-            if self.tray is None:
-                self.tray = TrayIcon(self.root, self.restore_from_tray, self.exit_launcher)
-            self.tray.show(self.tray_status())
+            self.show_tray(self.tray_status())
         except (OSError, WindowsTrayError):
             self.show_message("Не удалось открыть трей. Мониторинг продолжается в этом окне.", self.palette.amber)
             return
@@ -121,11 +134,18 @@ class TunnelGuardWindow(LauncherView):
         self.root.after_cancel(self.animation_job)
         self.animation_job = None
         self.root.withdraw()
-        self.tray.notify()
 
     def update_tray(self):
-        if self.hidden_in_tray:
-            self.tray.update(self.tray_status())
+        status = self.tray_status()
+        if self.hidden_in_tray or status.level == "warning":
+            try:
+                self.show_tray(status)
+            except (OSError, WindowsTrayError):
+                self.show_message("Не удалось показать предупреждение в трее. Проверь историю запусков.",
+                                  self.palette.danger)
+        elif self.tray_visible:
+            self.tray.hide()
+            self.tray_visible = False
 
     def restore_from_tray(self):
         was_hidden = self.hidden_in_tray
@@ -133,8 +153,7 @@ class TunnelGuardWindow(LauncherView):
         self.root.deiconify()
         self.root.lift()
         self.root.focus_force()
-        if self.tray is not None:
-            self.tray.hide()
+        self.update_tray()
         if was_hidden:
             self.animate()
         self.render_news_status()
@@ -301,7 +320,8 @@ class TunnelGuardWindow(LauncherView):
                 return
             self.settings = updated
             self.guard.configured_paths = dict(configured)
-            self.refresh_process_snapshot()
+            self.refresh_app_paths()
+            self.update_buttons()
             self.show_message("Пути приложений сохранены.")
             close()
 
@@ -392,20 +412,27 @@ class TunnelGuardWindow(LauncherView):
             self.set_button(self.launch_buttons[app], available and not running and self.running is not None
                             and self.target_ip is not None and self.route and not self.busy)
 
-    def refresh_process_snapshot(self):
+    def read_running_apps(self):
         try:
-            self.running = self.guard.running_apps()
+            return self.guard.running_apps()
         except (OSError, GuardDenied):
-            self.running = None
+            return None
+
+    def refresh_app_paths(self):
         for app in self.guard.applications:
             try:
                 self.available[app] = self.guard.app_path(app) is not None
             except OSError:
                 self.available[app] = False
+
+    def refresh_process_snapshot(self, running, vpn, wall_time, tick):
+        self.process_check_pending = False
+        self.running = running
+        self.process_vpn = vpn
+        self.refresh_app_paths()
         if self.track_activity:
-            tick = time.monotonic()
-            self.activity.observe(self.running, wall_time=time.time(), tick=tick)
-            if tick - self.activity_saved_tick >= SAVE_INTERVAL:
+            incident_changed = self.activity.observe(running, wall_time=wall_time, tick=tick, vpn=vpn)
+            if incident_changed or tick - self.activity_saved_tick >= SAVE_INTERVAL:
                 self.flush_activity()
         self.update_buttons()
         self.update_activity_dialog()
@@ -423,7 +450,22 @@ class TunnelGuardWindow(LauncherView):
         self.activity.dirty = False
 
     def refresh_processes(self):
-        self.refresh_process_snapshot()
+        if not self.process_check_pending:
+            self.process_check_pending = True
+
+            def sample():
+                running = self.read_running_apps()
+                vpn = None
+                if running and any(running.values()):
+                    try:
+                        vpn = current_route() is not None
+                    except (OSError, GuardDenied, ValueError):
+                        pass
+                    if vpn is False:
+                        running = self.read_running_apps()
+                self.results.put(("processes", (running, vpn, time.time(), time.monotonic())))
+
+            Thread(target=sample, daemon=True).start()
         self.root.after(2000, self.refresh_processes)
 
     def schedule_network_check(self):
@@ -611,6 +653,9 @@ class TunnelGuardWindow(LauncherView):
             kind, value = self.results.get_nowait()
             if kind == "network":
                 self.update_network(*value)
+                continue
+            if kind == "processes":
+                self.refresh_process_snapshot(*value)
                 continue
             if kind == "news":
                 self.receive_news(*value)

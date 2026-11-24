@@ -35,6 +35,9 @@ class TrayStatusTests(unittest.TestCase):
     def test_status_text_lists_custom_apps_and_unknown_snapshot(self):
         self.assertIn("Моя программа", TrayStatus(True, ("Моя программа",)).details)
         self.assertIn("неизвестен", TrayStatus(False, None).details)
+        warning = TrayStatus(False, ("Моя программа",))
+        self.assertEqual(warning.title, "Приложения без VPN")
+        self.assertIn("Моя программа", warning.details)
 
     def test_older_settings_get_tray_by_default_and_explicit_opt_out_is_preserved(self):
         with TemporaryDirectory() as folder:

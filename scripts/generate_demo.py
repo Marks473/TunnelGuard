@@ -15,10 +15,11 @@ import win32ui
 PROJECT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT))
 
-from activity import ActivityTracker, Session, Usage
+from activity import ActivityTracker, Session, Usage, VpnIncident
 from guard import APPLICATIONS
 from news_feed import Article, NewsCache
 from settings import Settings
+from tray import TrayStatus, VpnAlert
 from tunnelguard import TunnelGuardWindow
 from windows_probe import Route
 
@@ -64,9 +65,11 @@ def main():
         {"OpenCode CLI": Usage(8100, 8, now), "Orca": Usage(5120, 2, now - 3600)},
         (
             Session("OpenCode CLI", now - 1080, now, "guarded", seconds=1080,
-                    checked_ip="203.0.113.42", pid=4100),
+                    checked_ip="203.0.113.42", pid=4100,
+                    vpn_incidents=[VpnIncident(now - 480, now - 350, during_start=False)]),
             Session("Orca", now - 7200, now - 4000, "observed", status="closed",
-                    ended_at=now - 3900, seconds=3200),
+                    ended_at=now - 3900, seconds=3300,
+                    vpn_incidents=[VpnIncident(now - 7200, now - 7080, during_start=True)]),
         ),
     )
     usage.session_seconds["OpenCode CLI"] = 1080
@@ -110,6 +113,9 @@ def main():
             view.open_application_paths(settings_dialog)
             path_dialog = next(child for child in settings_dialog.winfo_children() if isinstance(child, tk.Toplevel))
             capture(path_dialog, output / "app-paths.png")
+            alert = VpnAlert(root, lambda: None)
+            alert.update(TrayStatus(False, ("Orca", "OpenCode CLI", "Visual Studio Code")))
+            capture(alert.window, output / "vpn-alert.png")
         finally:
             root.destroy()
 

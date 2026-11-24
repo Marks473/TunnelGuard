@@ -4,6 +4,7 @@ from pathlib import Path
 from queue import Empty, SimpleQueue
 from tempfile import TemporaryDirectory
 from threading import Thread
+import tkinter as tk
 
 from PIL import ImageDraw
 import pywintypes
@@ -19,7 +20,7 @@ SHOW_MESSAGE = "TunnelGuard.TrayWindow.Show.v1"
 TRAY_CALLBACK = con.WM_APP + 1
 TRAY_COMMAND = con.WM_APP + 2
 OPEN_ITEM, STATUS_ITEM, EXIT_ITEM = 101, 102, 103
-STATUS_COLORS = {"ok": "#36d399", "warning": "#fb9a54", "unknown": "#9e95b1"}
+STATUS_COLORS = {"ok": "#36d399", "warning": "#ed3152", "unknown": "#9e95b1"}
 
 
 @dataclass(frozen=True)
@@ -37,7 +38,7 @@ class TrayStatus:
 
     @property
     def title(self):
-        return {"ok": "ОК", "warning": "Внимание", "unknown": "Нет данных"}[self.level]
+        return {"ok": "ОК", "warning": "Приложения без VPN", "unknown": "Нет данных"}[self.level]
 
     @property
     def vpn_text(self):
@@ -67,12 +68,81 @@ def request_open():
     return False
 
 
+class VpnAlert:
+    def __init__(self, root, on_open):
+        self.root = root
+        self.on_open = on_open
+        self.window = None
+        self.apps = ()
+
+    def update(self, status):
+        if status.level != "warning":
+            self.hide()
+            return
+        if self.apps == status.running:
+            return
+        self.hide()
+        window = self.window = tk.Toplevel(self.root)
+        window.title("TunnelGuard — предупреждение VPN")
+        window.overrideredirect(True)
+        window.wm_attributes("-toolwindow", True)
+        window.withdraw()
+        window.config(bg="#260a16", highlightthickness=3, highlightbackground="#ff3d57")
+
+        header = tk.Frame(window, bg="#c51736", padx=14, pady=10)
+        header.pack(fill="x")
+        tk.Label(header, text="!", font=("Segoe UI", 26, "bold"), fg="white", bg="#8e1028",
+                 width=2).pack(side="left", padx=(0, 12))
+        tk.Label(header, text="ПРИЛОЖЕНИЯ БЕЗ VPN", font=("Segoe UI", 17, "bold"),
+                 fg="white", bg="#c51736").pack(side="left")
+
+        body = tk.Frame(window, bg="#260a16", padx=18, pady=12)
+        body.pack(fill="x")
+        shown = status.running[:6]
+        programs = "  ·  ".join(shown)
+        if len(shown) < len(status.running):
+            programs += f"  ·  ещё {len(status.running) - len(shown)}"
+        tk.Label(body, text=programs, font=("Segoe UI", 13, "bold"), fg="#fff7f9", bg="#260a16",
+                 wraplength=360, justify="left").pack(anchor="w")
+        tk.Label(body, text="Подключите VPN или закройте эти приложения.",
+                 font=("Segoe UI", 10), fg="#ffb9c6", bg="#260a16").pack(anchor="w", pady=(5, 10))
+        tk.Button(body, text="Открыть TunnelGuard", command=self.on_open, font=("Segoe UI", 10, "bold"),
+                  bg="#ffe4eb", fg="#560c1e", activebackground="white", activeforeground="#560c1e",
+                  relief="flat", padx=12, pady=4, cursor="hand2").pack(anchor="e")
+
+        try:
+            window.update_idletasks()
+            hwnd = gui.GetParent(window.winfo_id())
+            ex_style = gui.GetWindowLong(hwnd, con.GWL_EXSTYLE)
+            gui.SetWindowLong(hwnd, con.GWL_EXSTYLE, ex_style | con.WS_EX_NOACTIVATE)
+            taskbar = gui.FindWindow("Shell_TrayWnd", None)
+            monitor = win32api.MonitorFromWindow(taskbar or hwnd, con.MONITOR_DEFAULTTONEAREST)
+            area = win32api.GetMonitorInfo(monitor)
+            left, top, right, bottom = area["Work"]
+            width, height = window.winfo_reqwidth(), window.winfo_reqheight()
+            edge = 14
+            x = left + edge if left > area["Monitor"][0] else max(left, right - width - edge)
+            y = top + edge if top > area["Monitor"][1] else max(top, bottom - height - edge)
+            gui.SetWindowPos(hwnd, con.HWND_TOPMOST, x, y, width, height, con.SWP_NOACTIVATE | con.SWP_SHOWWINDOW)
+        except (OSError, pywintypes.error, tk.TclError):
+            self.hide()
+            return
+        self.apps = status.running
+
+    def hide(self):
+        if self.window is not None:
+            self.window.destroy()
+            self.window = None
+        self.apps = ()
+
+
 class TrayIcon:
     """Keep the Win32 message loop separate from the Tk event loop."""
 
     def __init__(self, root, on_open, on_exit):
         self.root = root
         self.actions = {"open": on_open, "exit": on_exit}
+        self.alert = VpnAlert(root, on_open)
         self.closed = False
         self.native = NativeTray()
         self.thread = Thread(target=self.native.run, daemon=True)
@@ -100,8 +170,10 @@ class TrayIcon:
 
     def show(self, status):
         self.send(self.native.show, status, wait=True)
+        self.alert.update(status)
 
     def update(self, status):
+        self.alert.update(status)
         try:
             self.send(self.native.update, status)
         except pywintypes.error:
@@ -114,12 +186,14 @@ class TrayIcon:
             pass
 
     def hide(self):
+        self.alert.hide()
         try:
             self.send(self.native.hide)
         except pywintypes.error:
             pass
 
     def close(self):
+        self.alert.hide()
         self.closed = True
         if self.poll_job is not None:
             self.root.after_cancel(self.poll_job)
@@ -177,8 +251,13 @@ class NativeTray:
             for level, color in STATUS_COLORS.items():
                 image = brand_icon(64)
                 draw = ImageDraw.Draw(image)
-                draw.ellipse((41, 41, 63, 63), fill="#221b36")
-                draw.ellipse((44, 44, 60, 60), fill=color)
+                if level == "warning":
+                    draw.rounded_rectangle((0, 0, 63, 63), radius=16, fill="#b5112f")
+                    draw.rounded_rectangle((26, 10, 37, 37), radius=5, fill="white")
+                    draw.ellipse((26, 44, 37, 55), fill="white")
+                else:
+                    draw.ellipse((38, 38, 63, 63), fill="#221b36")
+                    draw.ellipse((40, 40, 62, 62), fill=color)
                 path = Path(folder) / f"{level}.ico"
                 image.save(path, sizes=[(16, 16), (20, 20), (24, 24), (32, 32), (64, 64)])
                 self.icons[level] = gui.LoadImage(0, str(path), con.IMAGE_ICON, 0, 0,
@@ -210,7 +289,7 @@ class NativeTray:
     def notify(self):
         if not self.visible:
             return
-        flags = gui.NIIF_WARNING if self.state.level == "warning" else gui.NIIF_INFO
+        flags = gui.NIIF_ERROR if self.state.level == "warning" else gui.NIIF_INFO
         data = self.icon_data(gui.NIF_INFO) + (self.state.details[:240], 7000,
                                                f"TunnelGuard · {self.state.title}", flags)
         try:

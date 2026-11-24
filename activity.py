@@ -12,6 +12,8 @@ from settings import normalize_ipv4, write_local_json
 MAX_SAMPLE_GAP = 12
 SAVE_INTERVAL = 30
 HISTORY_LIMIT = 400
+VPN_INCIDENT_LIMIT = 20
+ACTIVITY_MAX_BYTES = 2 * 1024 * 1024
 
 
 @dataclass
@@ -26,6 +28,13 @@ class Usage:
 
 
 @dataclass
+class VpnIncident:
+    first_seen: float
+    last_seen: float
+    during_start: bool
+
+
+@dataclass
 class Session:
     app: str
     started_at: float
@@ -36,6 +45,7 @@ class Session:
     seconds: float = 0
     checked_ip: str = ""
     pid: int = 0
+    vpn_incidents: list[VpnIncident] = field(default_factory=list)
 
 
 def activity_path():
@@ -46,8 +56,8 @@ def load_activity(path=None):
     path = path if path is not None else activity_path()
     try:
         with path.open(encoding="utf-8") as file:
-            raw = file.read(1024 * 1024 + 1)
-        if len(raw) > 1024 * 1024:
+            raw = file.read(ACTIVITY_MAX_BYTES + 1)
+        if len(raw) > ACTIVITY_MAX_BYTES:
             return ActivityTracker()
         payload = json.loads(raw)
         records = {name: Usage(
@@ -81,7 +91,17 @@ def load_session(data):
         ended_at=timestamp(data["ended_at"]), seconds=nonnegative(data["seconds"]),
         checked_ip=normalize_ipv4(data["checked_ip"], public=True) if origin == "guarded" else "",
         pid=int(nonnegative(data["pid"])),
+        vpn_incidents=[load_vpn_incident(row) for row in data.get("vpn_incidents", [])[-VPN_INCIDENT_LIMIT:]],
     )
+
+
+def load_vpn_incident(data):
+    first_seen = timestamp(data["first_seen"])
+    last_seen = timestamp(data["last_seen"])
+    during_start = data["during_start"]
+    if first_seen > last_seen or not isinstance(during_start, bool):
+        raise ValueError("Invalid VPN incident")
+    return VpnIncident(first_seen, last_seen, during_start)
 
 
 def nonnegative(value, maximum=1e12):
@@ -104,6 +124,7 @@ class ActivityTracker:
         self.history = list(history)
         self.open_sessions = {}
         self.observed_pids = {}
+        self.vpn_exposures = {}
         self.history_revision = 0
         self.session_seconds = {}
         self.previous = None
@@ -130,6 +151,8 @@ class ActivityTracker:
             session.started_at = min(session.started_at, wall_time)
             session.last_seen = max(session.last_seen, wall_time)
             session.origin, session.checked_ip, session.pid = "guarded", checked_ip, pid
+            if session.vpn_incidents:
+                session.vpn_incidents[0].during_start = False
             self.record_change()
             return
         if session:
@@ -138,6 +161,7 @@ class ActivityTracker:
 
     def finish_session(self, app, status, ended_at=0):
         session = self.open_sessions.pop(app)
+        self.vpn_exposures.pop(app, None)
         session.status, session.ended_at = status, ended_at
         self.record_change()
 
@@ -145,11 +169,13 @@ class ActivityTracker:
         for app in tuple(self.open_sessions):
             self.finish_session(app, "interrupted")
 
-    def observe(self, processes, *, wall_time, tick):
+    def observe(self, processes, *, wall_time, tick, vpn=None):
+        old_exposures = self.vpn_exposures.copy()
         if processes is None:
             self.previous = None
             self.observed_pids = {}
-            return
+            self.observe_vpn({}, (), wall_time, None)
+            return bool(old_exposures)
         previously_observed = self.observed_pids
         self.observed_pids = {name: frozenset(pids) for name, pids in processes.items() if pids}
         active = {name for name, pids in processes.items() if pids}
@@ -198,7 +224,32 @@ class ActivityTracker:
             self.dirty = True
 
         self.session_seconds = new_sessions
+        if not has_interval and self.vpn_exposures:
+            self.vpn_exposures.clear()
+            self.record_change()
+        starts = active - previous if has_interval else ()
+        self.observe_vpn(active, starts, wall_time, vpn)
         self.previous = wall_time, tick, active
+        return old_exposures != self.vpn_exposures
+
+    def observe_vpn(self, active, starts, wall_time, vpn):
+        if vpn is not False:
+            if self.vpn_exposures:
+                self.vpn_exposures.clear()
+                self.record_change()
+            return
+        for name in sorted(active):
+            exposure = self.vpn_exposures.get(name)
+            if exposure is not None:
+                exposure.last_seen = max(exposure.last_seen, wall_time)
+                continue
+            session = self.open_sessions[name]
+            exposure = VpnIncident(wall_time, wall_time, name in starts and session.origin != "guarded")
+            self.vpn_exposures[name] = exposure
+            incidents = session.vpn_incidents
+            incidents.append(exposure)
+            del incidents[:-VPN_INCIDENT_LIMIT]
+            self.record_change()
 
     @staticmethod
     def add_day(usage, day, seconds):

@@ -1,5 +1,5 @@
 param(
-    [string]$Version = '1.0.0',
+    [string]$Version = '1.1.0',
     [string]$Python = 'python.exe',
     [string]$InnoCompiler,
     [string]$OutputDirectory = (Join-Path $PSScriptRoot 'dist')
@@ -7,7 +7,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $project = $PSScriptRoot
-if ($Version -notmatch '^\d+\.\d+\.\d+$') { throw 'Use a numeric version such as 1.0.0.' }
+if ($Version -notmatch '^\d+\.\d+\.\d+$') { throw 'Use a numeric version such as 1.1.0.' }
 $output = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputDirectory)
 if (-not $InnoCompiler) {
     $programFilesX86 = [Environment]::GetFolderPath('ProgramFilesX86')

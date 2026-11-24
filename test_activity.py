@@ -13,8 +13,8 @@ class UsageTests(unittest.TestCase):
         self.tracker = ActivityTracker()
         self.start = time.time()
 
-    def sample(self, offset, processes):
-        self.tracker.observe(processes, wall_time=self.start + offset, tick=10 + offset)
+    def sample(self, offset, processes, vpn=None):
+        return self.tracker.observe(processes, wall_time=self.start + offset, tick=10 + offset, vpn=vpn)
 
     def test_counts_only_observed_running_intervals_and_records_end(self):
         self.sample(0, {})
@@ -79,6 +79,47 @@ class UsageTests(unittest.TestCase):
         self.assertEqual(session.last_seen, self.start + 4)
         self.assertEqual(session.checked_ip, TEST_IP)
         self.assertEqual(loaded.open_sessions, {})
+
+    def test_logs_start_and_later_outage_in_the_same_session(self):
+        self.sample(0, {}, False)
+        self.assertTrue(self.sample(2, {"Demo": (7,)}, False))
+        self.assertFalse(self.sample(4, {"Demo": (7,)}, False))
+        self.assertTrue(self.sample(6, {"Demo": (7,)}, True))
+        self.assertTrue(self.sample(8, {"Demo": (7,)}, False))
+        self.assertTrue(self.sample(10, {}, False))
+        session, = self.tracker.history
+        first, second = session.vpn_incidents
+        self.assertTrue(first.during_start)
+        self.assertEqual((first.first_seen, first.last_seen), (self.start + 2, self.start + 4))
+        self.assertFalse(second.during_start)
+        self.assertEqual(second.first_seen, self.start + 8)
+        self.assertEqual(self.tracker.vpn_exposures, {})
+        with TemporaryDirectory() as folder:
+            path = Path(folder) / "activity.json"
+            save_activity(self.tracker, path)
+            saved, = load_activity(path).history
+        self.assertEqual(saved.vpn_incidents, session.vpn_incidents)
+
+    def test_unknown_vpn_or_process_snapshot_is_not_counted_as_an_outage(self):
+        self.sample(0, {"Demo": (7,)}, None)
+        self.sample(2, None, False)
+        self.assertFalse(self.tracker.history[0].vpn_incidents)
+        self.sample(4, {"Demo": (7,)}, False)
+        self.sample(6, {"Demo": (7,)}, None)
+        self.sample(8, {"Demo": (7,)}, False)
+        first, second = self.tracker.history[0].vpn_incidents
+        self.assertFalse(first.during_start)
+        self.assertEqual(first.last_seen, self.start + 4)
+        self.assertEqual(second.first_seen, self.start + 8)
+
+    def test_guarded_launch_observed_during_outage_is_work_without_vpn(self):
+        self.sample(0, {}, True)
+        self.sample(2, {"Demo": (7,)}, False)
+        self.tracker.record_guarded_launch("Demo", 7, self.start + 1, TEST_IP)
+        session, = self.tracker.history
+        incident, = session.vpn_incidents
+        self.assertFalse(incident.during_start)
+        self.assertEqual(incident.first_seen, self.start + 2)
 
     def test_day_boundary_splits_elapsed_time(self):
         self.start = datetime(2025, 11, 24, 23, 59, 59).timestamp()
