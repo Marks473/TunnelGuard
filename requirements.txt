@@ -1,0 +1,5 @@
+Pillow==12.2.0
+ctranslate2==4.6.3
+sentencepiece==0.2.1
+numpy==1.26.4
+pywin32==306
